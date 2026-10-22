@@ -1,0 +1,19 @@
+{
+  "name": "mycanaryrepo",
+  "language": "Python",
+  "test_command": "pytest -q",
+  "typecheck_command": "python3 -m compileall -q app tests",
+  "integration_test_command": "pytest -q",
+  "test_paths": [
+    "tests/"
+  ],
+  "source_paths": [
+    "app/"
+  ],
+  "contract_files": [
+    ".openhands/microagents/repo.md",
+    "PARITY.md",
+    "ARCHITECTURE.md"
+  ],
+  "cloud_run_service": "mycanaryrepo"
+}
