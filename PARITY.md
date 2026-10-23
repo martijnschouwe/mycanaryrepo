@@ -9,6 +9,17 @@
 - String inputs (codes, descriptions, customer fields) must be trimmed and validated.
 - Empty or whitespace-only identifiers and XSS/script injection payloads (`<script>`, `javascript:`) must be rejected.
 
-## 3. Definition of Done
+## 3. Discount Calculations (`apply_discount_cents`)
+- **Signature**: `def apply_discount_cents(subtotal_cents: int, discount_bps: int) -> int:`
+- **Calculation**:
+  - `discount_amount_cents = (subtotal_cents * discount_bps + 5000) // 10000` (deterministic integer round-half-up)
+  - Returns `subtotal_cents - discount_amount_cents`
+- **Validation**:
+  - If `subtotal_cents` or `discount_bps` is a `bool` or not an `int`, raise `TypeError` with "subtotal_cents must be an integer" or "discount_bps must be an integer".
+  - If `subtotal_cents < 0`, raise `ValueError` with "subtotal_cents cannot be negative".
+  - If `discount_bps < 0`, raise `ValueError` with "discount_bps cannot be negative".
+  - If `discount_bps > 10000`, raise `ValueError` with "discount_bps cannot exceed 10000".
+
+## 4. Definition of Done
 - Every feature or bugfix must have comprehensive unit and boundary tests in `tests/`.
 - `pytest -q` must pass 100% with zero modifications to existing or Stage 1 test files during Stage 2.
