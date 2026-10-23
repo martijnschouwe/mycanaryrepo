@@ -3,6 +3,9 @@
 from decimal import Decimal, ROUND_HALF_UP
 import math
 
+HUNDRED = Decimal("100")
+ONE_CENT = Decimal("1")
+
 
 def calculate_subtotal_cents(unit_price_cents: int, quantity: int) -> int:
     """Return subtotal in integer cents for a given unit price and quantity."""
@@ -39,7 +42,7 @@ def calculate_vat_cents(subtotal_cents: int, vat_rate_percent: float | int) -> i
     subtotal_dec = Decimal(subtotal_cents)
     vat_rate_dec = Decimal(str(vat_rate_percent))
 
-    vat_cents_dec = (subtotal_dec * vat_rate_dec) / Decimal("100")
-    rounded_vat_dec = vat_cents_dec.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    vat_cents_dec = (subtotal_dec * vat_rate_dec) / HUNDRED
+    rounded_vat_dec = vat_cents_dec.quantize(ONE_CENT, rounding=ROUND_HALF_UP)
 
     return int(rounded_vat_dec)
