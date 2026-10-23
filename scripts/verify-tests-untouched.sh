@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # verify-tests-untouched.sh
-# Enforces test immutability during Stage 2 (The Coder) based on `.openhands/project.json` (or `TEST_PATHS`).
+# Enforces test and contract/guard immutability during Stage 2 (The Coder) based on `.openhands/project.json` (or `TEST_PATHS`).
 set -euo pipefail
 
 # Bepaal de start-branch referentie (bijv. origin/feat/issue-<nr> van Worker 1, met fallback naar origin/main)
@@ -15,54 +15,106 @@ else
   START_REF="origin/main"
 fi
 
-# Lees test_paths uit TEST_PATHS env var of .openhands/project.json (fallback: __tests__)
-RESOLVED_TEST_PATHS=()
-if [ -n "${TEST_PATHS:-}" ]; then
-  IFS=':' read -r -a RESOLVED_TEST_PATHS <<< "$TEST_PATHS"
-elif [ -f ".openhands/project.json" ] && command -v python3 >/dev/null 2>&1; then
-  while IFS= read -r line; do
-    [ -n "$line" ] && RESOLVED_TEST_PATHS+=("$line")
-  done < <(python3 -c '
-import json, sys
+export START_REF
+
+# Gebruik Python om veilig test_paths uit zowel START_REF als de werkboom te laden
+# (zodat Stage 2 `.openhands/project.json` niet kan manipuleren om de guard te omzeilen)
+# en controleer gewijzigde paden zonder kwetsbare shell-regex interpolatie.
+MODIFIED_TESTS=$(python3 - <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+start_ref = os.environ.get("START_REF", "origin/main")
+env_test_paths = os.environ.get("TEST_PATHS", "").strip()
+
+immutable_guard_files = [
+    ".openhands/project.json",
+    "verify-tests-untouched.sh",
+    "scripts/verify-tests-untouched.sh",
+    ".github/workflows",
+]
+
+resolved = []
+if env_test_paths:
+    for part in env_test_paths.split(":"):
+        if part.strip():
+            resolved.append(part.strip())
+
+# 1. Load trusted test_paths from START_REF:.openhands/project.json
 try:
-    data = json.load(open(".openhands/project.json", encoding="utf-8"))
-    paths = data.get("test_paths") or ["__tests__/"]
-    for p in paths:
-        p = str(p).strip()
-        if p:
-            print(p)
+    proc = subprocess.run(
+        ["git", "show", f"{start_ref}:.openhands/project.json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode == 0 and proc.stdout.strip():
+        data = json.loads(proc.stdout)
+        for p in data.get("test_paths") or []:
+            if str(p).strip():
+                resolved.append(str(p).strip())
 except Exception:
-    print("__tests__/")
-')
-fi
+    pass
 
-if [ "${#RESOLVED_TEST_PATHS[@]}" -eq 0 ]; then
-  RESOLVED_TEST_PATHS=("__tests__/")
-fi
+# 2. Also load test_paths from working tree .openhands/project.json
+try:
+    if os.path.isfile(".openhands/project.json"):
+        with open(".openhands/project.json", encoding="utf-8") as fh:
+            data = json.load(fh)
+        for p in data.get("test_paths") or []:
+            if str(p).strip():
+                resolved.append(str(p).strip())
+except Exception:
+    pass
 
-# Bouw een grep-expressie voor alle geconfigureerde test_paths
-GREP_PARTS=()
-for raw_path in "${RESOLVED_TEST_PATHS[@]}"; do
-  cleaned="${raw_path%/}"
-  cleaned="${cleaned#./}"
-  [ -n "$cleaned" ] && GREP_PARTS+=("$cleaned")
-done
-GREP_PATTERN=$(IFS='|'; echo "${GREP_PARTS[*]}")
+if not resolved:
+    resolved.append("__tests__/")
 
-# Vergelijk gewijzigde bestanden ten opzichte van de start-branch (inclusief uncommitted/staged wijzigingen)
-MODIFIED_TESTS=$(
-  {
-    git diff --name-only "${START_REF}...HEAD" 2>/dev/null || true
-    git diff --name-only HEAD 2>/dev/null || true
-    git diff --cached --name-only 2>/dev/null || true
-  } | grep -E "(^|/)($GREP_PATTERN)(/|$)" | sort -u || true
+protected_paths = list(dict.fromkeys([*resolved, *immutable_guard_files]))
+
+def matches_protected(file_path: str, paths: list[str]) -> bool:
+    norm_file = file_path.strip().lstrip("./")
+    if not norm_file:
+        return False
+    for raw_tp in paths:
+        cleaned = raw_tp.strip().strip("/").lstrip("./")
+        if not cleaned:
+            continue
+        if (
+            norm_file == cleaned
+            or norm_file.startswith(f"{cleaned}/")
+            or f"/{cleaned}/" in norm_file
+            or norm_file.endswith(f"/{cleaned}")
+        ):
+            return True
+    return False
+
+diff_cmds = [
+    ["git", "diff", "--name-only", f"{start_ref}...HEAD"],
+    ["git", "diff", "--name-only", "HEAD"],
+    ["git", "diff", "--cached", "--name-only"],
+]
+changed = set()
+for cmd in diff_cmds:
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode == 0:
+        for line in proc.stdout.splitlines():
+            if line.strip():
+                changed.add(line.strip())
+
+violating = sorted(f for f in changed if matches_protected(f, protected_paths))
+for f in violating:
+    print(f)
+PY
 )
 
 if [ -n "$MODIFIED_TESTS" ]; then
   echo "❌ CRITICAL GUARDRAIL TRIGGERED:"
-  echo "The Coder modified test files in protected test_paths (${RESOLVED_TEST_PATHS[*]}), which is strictly prohibited:"
+  echo "The Coder modified protected test or guardrail files, which is strictly prohibited:"
   echo "$MODIFIED_TESTS"
-  echo "Reverting test changes and failing build..."
+  echo "Reverting protected file changes and failing build..."
   while IFS= read -r file; do
     [ -z "$file" ] && continue
     git checkout "$START_REF" -- "$file" 2>/dev/null || \
@@ -72,4 +124,4 @@ if [ -n "$MODIFIED_TESTS" ]; then
   exit 1
 fi
 
-echo "✅ Tests untouched (${RESOLVED_TEST_PATHS[*]}). Verification valid."
+echo "✅ Tests and guardrails untouched. Verification valid."
